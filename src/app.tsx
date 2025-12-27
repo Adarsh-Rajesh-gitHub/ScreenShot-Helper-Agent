@@ -75,6 +75,50 @@ export default function Chat() {
   });
 
   const [agentInput, setAgentInput] = useState("");
+  // B1 Capture state (no AI call yet)
+  const [goal, setGoal] = useState("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [captureResp, setCaptureResp] = useState<any>(null);
+  const [captureErr, setCaptureErr] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function handleCaptureSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setCaptureErr(null);
+    setCaptureResp(null);
+
+    if (!imageFile) {
+      setCaptureErr("Missing image.");
+      return;
+    }
+
+    const trimmed = goal.trim();
+    if (!trimmed) {
+      setCaptureErr("Missing goal.");
+      return;
+    }
+
+    if (trimmed.split(/\s+/).length < 2) {
+      setCaptureErr("Goal must be at least 2 words.");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("goal", trimmed);
+      fd.append("image", imageFile);
+
+      const r = await fetch("/capture", { method: "POST", body: fd });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((data as any)?.error || `Upload failed (${r.status})`);
+      setCaptureResp(data);
+    } catch (err: any) {
+      setCaptureErr(err?.message || "Upload failed.");
+    } finally {
+      setUploading(false);
+    }
+  }
   const handleAgentInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) => {
@@ -339,6 +383,81 @@ export default function Chat() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Capture (B1): upload screenshot + goal, no AI call yet */}
+        <div className="px-4 py-3 border-t border-neutral-300 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900">
+          <form onSubmit={handleCaptureSubmit} className="flex flex-col gap-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm text-neutral-600 dark:text-neutral-400">
+                Goal (one sentence)
+              </label>
+              <input
+                name="goal"
+                value={goal}
+                onChange={(e) => setGoal(e.target.value)}
+                placeholder="e.g., Reset my password on this site."
+                className="w-full rounded-md border border-neutral-200 dark:border-neutral-800 bg-transparent px-3 py-2"
+                required
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm text-neutral-600 dark:text-neutral-400">
+                Screenshot (PNG/JPG)
+              </label>
+                          <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const f = e.dataTransfer.files?.[0];
+                if (!f) return;
+                if (!["image/png", "image/jpeg"].includes(f.type)) {
+                  setCaptureErr("Only PNG/JPG allowed.");
+                  return;
+                }
+                setCaptureErr(null);
+                setImageFile(f);
+              }}
+              className="rounded-md border border-dashed border-neutral-300 dark:border-neutral-700 p-3 text-sm text-neutral-600 dark:text-neutral-400"
+            >
+              Drag & drop a PNG/JPG here
+              {imageFile ? ` (selected: ${imageFile.name})` : ""}
+            </div>
+              <input
+                type="file"
+                name="image"
+                accept="image/png,image/jpeg"
+                onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+                required
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={uploading}
+                className="rounded-md border border-neutral-200 dark:border-neutral-800 px-3 py-2"
+              >
+                {uploading ? "Uploading..." : "Send screenshot"}
+              </button>
+
+              {captureErr && (
+                <span className="text-sm text-red-600">{captureErr}</span>
+              )}
+              {captureResp && (
+                <span className="text-sm text-green-600">Received.</span>
+              )}
+            </div>
+
+            {captureResp && (
+              <pre className="text-xs overflow-auto rounded-md border border-neutral-200 dark:border-neutral-800 p-2">
+                {JSON.stringify(captureResp, null, 2)}
+              </pre>
+            )}
+          </form>
+        </div>
         {/* Input Area */}
         <form
           onSubmit={(e) => {
@@ -350,8 +469,7 @@ export default function Chat() {
             });
             setTextareaHeight("auto"); // Reset height after submission
           }}
-          className="p-3 bg-neutral-50 absolute bottom-0 left-0 right-0 z-10 border-t border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900"
-        >
+  className="p-3 bg-neutral-50 border-t border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900"        >
           <div className="flex items-center gap-2">
             <div className="flex-1 relative">
               <Textarea
@@ -413,9 +531,24 @@ export default function Chat() {
   );
 }
 
-const hasOpenAiKeyPromise = fetch("/check-open-ai-key").then((res) =>
-  res.json<{ success: boolean }>()
-);
+const hasOpenAiKeyPromise = (async () => {
+  // Prefer Workers AI binding check. Fall back to older OpenAI-key check
+  // so the UI still works if server.ts hasn't been updated yet.
+  const tryFetch = async (path: string) => {
+    const res = await fetch(path);
+    if (!res.ok) return { success: false };
+    // Some older handlers accidentally return plain text; guard JSON parsing.
+    try {
+      return (await res.json()) as { success: boolean };
+    } catch {
+      return { success: false };
+    }
+  };
+
+  const primary = await tryFetch("/check-ai-binding");
+  if (primary.success) return primary;
+  return await tryFetch("/check-open-ai-key");
+})();
 
 function HasOpenAIKey() {
   const hasOpenAiKey = use(hasOpenAiKeyPromise);
@@ -446,27 +579,18 @@ function HasOpenAIKey() {
               </div>
               <div className="flex-1">
                 <h3 className="text-lg font-semibold text-red-600 dark:text-red-400 mb-2">
-                  OpenAI API Key Not Configured
+                  Workers AI Binding Not Configured
                 </h3>
                 <p className="text-neutral-600 dark:text-neutral-300 mb-1">
-                  Requests to the API, including from the frontend UI, will not
-                  work until an OpenAI API key is configured.
+                  Requests from this UI will not work until the Workers AI binding is available.
                 </p>
                 <p className="text-neutral-600 dark:text-neutral-300">
-                  Please configure an OpenAI API key by setting a{" "}
-                  <a
-                    href="https://developers.cloudflare.com/workers/configuration/secrets/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-red-600 dark:text-red-400"
-                  >
-                    secret
-                  </a>{" "}
-                  named{" "}
-                  <code className="bg-red-100 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-red-600 dark:text-red-400 font-mono text-sm">
-                    OPENAI_API_KEY
-                  </code>
-                  . <br />
+                  Please configure the Workers AI binding in your <code className="bg-red-100 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-red-600 dark:text-red-400 font-mono text-sm">wrangler.jsonc</code> as:
+                  <br />
+                  <code className="bg-red-100 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-red-600 dark:text-red-400 font-mono text-sm">{"\"ai\": {\"binding\": \"AI\"}"}</code>
+                  <br />
+                  and ensure your generated types include <code className="bg-red-100 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-red-600 dark:text-red-400 font-mono text-sm">AI: Ai</code> in <code className="bg-red-100 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-red-600 dark:text-red-400 font-mono text-sm">env.d.ts</code>.
+                  <br />
                   You can also use a different model provider by following these{" "}
                   <a
                     href="https://github.com/cloudflare/agents-starter?tab=readme-ov-file#use-a-different-ai-model-provider"

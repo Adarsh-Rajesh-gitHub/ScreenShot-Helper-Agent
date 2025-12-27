@@ -7,7 +7,6 @@ import { z } from "zod/v3";
 
 import type { Chat } from "./server";
 import { getCurrentAgent } from "agents";
-import { scheduleSchema } from "agents/schedule";
 
 /**
  * Weather information tool that requires human confirmation
@@ -33,80 +32,16 @@ const getLocalTime = tool({
   }
 });
 
-const scheduleTask = tool({
-  description: "A tool to schedule a task to be executed at a later time",
-  inputSchema: scheduleSchema,
-  execute: async ({ when, description }) => {
-    // we can now read the agent context from the ALS store
-    const { agent } = getCurrentAgent<Chat>();
 
-    function throwError(msg: string): string {
-      throw new Error(msg);
-    }
-    if (when.type === "no-schedule") {
-      return "Not a valid schedule input";
-    }
-    const input =
-      when.type === "scheduled"
-        ? when.date // scheduled
-        : when.type === "delayed"
-          ? when.delayInSeconds // delayed
-          : when.type === "cron"
-            ? when.cron // cron
-            : throwError("not a valid schedule input");
-    try {
-      agent!.schedule(input!, "executeTask", description);
-    } catch (error) {
-      console.error("error scheduling task", error);
-      return `Error scheduling task: ${error}`;
-    }
-    return `Task scheduled for type "${when.type}" : ${input}`;
-  }
-});
 
 /**
  * Tool to list all scheduled tasks
  * This executes automatically without requiring human confirmation
  */
-const getScheduledTasks = tool({
-  description: "List all tasks that have been scheduled",
-  inputSchema: z.object({}),
-  execute: async () => {
-    const { agent } = getCurrentAgent<Chat>();
-
-    try {
-      const tasks = agent!.getSchedules();
-      if (!tasks || tasks.length === 0) {
-        return "No scheduled tasks found.";
-      }
-      return tasks;
-    } catch (error) {
-      console.error("Error listing scheduled tasks", error);
-      return `Error listing scheduled tasks: ${error}`;
-    }
-  }
-});
-
 /**
  * Tool to cancel a scheduled task by its ID
  * This executes automatically without requiring human confirmation
  */
-const cancelScheduledTask = tool({
-  description: "Cancel a scheduled task using its ID",
-  inputSchema: z.object({
-    taskId: z.string().describe("The ID of the task to cancel")
-  }),
-  execute: async ({ taskId }) => {
-    const { agent } = getCurrentAgent<Chat>();
-    try {
-      await agent!.cancelSchedule(taskId);
-      return `Task ${taskId} has been successfully canceled.`;
-    } catch (error) {
-      console.error("Error canceling scheduled task", error);
-      return `Error canceling task ${taskId}: ${error}`;
-    }
-  }
-});
 
 /**
  * Export all available tools
@@ -115,9 +50,6 @@ const cancelScheduledTask = tool({
 export const tools = {
   getWeatherInformation,
   getLocalTime,
-  scheduleTask,
-  getScheduledTasks,
-  cancelScheduledTask
 } satisfies ToolSet;
 
 /**

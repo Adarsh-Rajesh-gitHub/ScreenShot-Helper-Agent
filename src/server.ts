@@ -1,24 +1,20 @@
-import { routeAgentRequest, type Schedule } from "agents";
-
-import { getSchedulePrompt } from "agents/schedule";
-
+import { routeAgentRequest } from "agents";
 import { AIChatAgent } from "agents/ai-chat-agent";
+
 import {
-  generateId,
   streamText,
-  type StreamTextOnFinishCallback,
   stepCountIs,
   createUIMessageStream,
   convertToModelMessages,
   createUIMessageStreamResponse,
-  type ToolSet
+  type StreamTextOnFinishCallback,
 } from "ai";
-import { openai } from "@ai-sdk/openai";
+
+import { createWorkersAI } from "workers-ai-provider";
 import { processToolCalls, cleanupMessages } from "./utils";
 import { tools, executions } from "./tools";
-// import { env } from "cloudflare:workers";
+ //import { env } from "cloudflare:workers";
 
-const model = openai("gpt-4o-2024-11-20");
 // Cloudflare AI Gateway
 // const openai = createOpenAI({
 //   apiKey: env.OPENAI_API_KEY,
@@ -32,19 +28,21 @@ export class Chat extends AIChatAgent<Env> {
   /**
    * Handles incoming chat messages and manages the response stream
    */
-  async onChatMessage(
-    onFinish: StreamTextOnFinishCallback<ToolSet>,
-    _options?: { abortSignal?: AbortSignal }
-  ) {
+  
+async onChatMessage(
+  onFinish: StreamTextOnFinishCallback<any>,
+  _options?: { abortSignal?: AbortSignal }
+) {
+
+    const workersai = createWorkersAI({ binding: this.env.AI });
+    const model = workersai("@cf/deepseek-ai/deepseek-r1-distill-qwen-32b");
+    
     // const mcpConnection = await this.mcp.connect(
     //   "https://path-to-mcp-server/sse"
     // );
 
     // Collect all tools, including MCP tools
-    const allTools = {
-      ...tools,
-      ...this.mcp.getAITools()
-    };
+      const allTools = { ...tools };
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -61,11 +59,7 @@ export class Chat extends AIChatAgent<Env> {
         });
 
         const result = streamText({
-          system: `You are a helpful assistant that can do various tasks... 
-
-${getSchedulePrompt({ date: new Date() })}
-
-If the user asks to schedule a task, use the schedule tool to schedule the task.
+          system: `You are a helpful assistant. Respond normally like a chat bot. Be concise.
 `,
 
           messages: convertToModelMessages(processedMessages),
@@ -85,44 +79,146 @@ If the user asks to schedule a task, use the schedule tool to schedule the task.
 
     return createUIMessageStreamResponse({ stream });
   }
-  async executeTask(description: string, _task: Schedule<string>) {
-    await this.saveMessages([
-      ...this.messages,
-      {
-        id: generateId(),
-        role: "user",
-        parts: [
-          {
-            type: "text",
-            text: `Running scheduled task: ${description}`
-          }
-        ],
-        metadata: {
-          createdAt: new Date()
-        }
-      }
-    ]);
-  }
 }
 
 /**
  * Worker entry point that routes incoming requests to the appropriate handler
  */
 export default {
+  
   async fetch(request: Request, env: Env, _ctx: ExecutionContext) {
     const url = new URL(request.url);
+    function uint8ToBase64(bytes: Uint8Array): string {
+      let binary = "";
+      const chunkSize = 0x8000; // 32KB chunks to avoid stack/memory issues
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        // biome-ignore lint/suspicious/noExplicitAny: fine for MVP
+        binary += String.fromCharCode(...(bytes.subarray(i, i + chunkSize) as any));
+      }
+      return btoa(binary);
+    }
+    if (url.pathname === "/check-ai-binding") {
+      return Response.json({ success: !!env.AI });
+    }
+    if (url.pathname === "/capture" && request.method === "POST") {
+      const form = await request.formData();
 
-    if (url.pathname === "/check-open-ai-key") {
-      const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+      const goalRaw = form.get("goal");
+      const imageRaw = form.get("image");
+
+      // Validate goal first (prevents calling .trim() on non-string)
+      if (typeof goalRaw !== "string" || goalRaw.trim().split(/\s+/).length < 2) {
+        return Response.json(
+          { ok: false, error: "Goal must be at least 2 words." },
+          { status: 400 }
+        );
+      }
+      const goal = goalRaw.trim();
+
+      // Validate image next (prevents arrayBuffer() on non-File)
+      if (!(imageRaw instanceof File)) {
+        return Response.json(
+          { ok: false, error: "Missing image file." },
+          { status: 400 }
+        );
+      }
+      const image = imageRaw;
+
+      const allowed = new Set(["image/png", "image/jpeg"]);
+      if (!allowed.has(image.type)) {
+        return Response.json(
+          { ok: false, error: "Only PNG/JPG allowed." },
+          { status: 415 }
+        );
+      }
+
+      const maxBytes = 5 * 1024 * 1024;
+      if (image.size > maxBytes) {
+        return Response.json(
+          { ok: false, error: "File too large (max 5MB)." },
+          { status: 413 }
+        );
+      }
+
+      // Build data URL after validation
+      const bytes = new Uint8Array(await image.arrayBuffer());
+      const base64 = uint8ToBase64(bytes);
+      const dataUrl = `data:${image.type};base64,${base64}`;
+
+      // Pick model from env (runtime-configurable). Keep typing flexible for MVP.
+      const modelId = (env.VISION_MODEL_ID || "@cf/meta/llama-3.2-11b-vision-instruct") as any;
+      const workersai = createWorkersAI({ binding: env.AI });
+      const visionModel = workersai(modelId);
+
+      const system =
+        "Return ONLY valid JSON with keys: " +
+        "screen_summary, ui_elements, steps, confidence, need_new_screenshot, expected_next_screen.";
+
+      const userPrompt = `Goal: ${goal}\nInclude >=6 ui_elements and >=4 steps.`;
+
+      // One-call brain + strict JSON parse with one retry
+      let raw: string;
+      {
+        const r = streamText({
+          model: visionModel,
+          system,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: userPrompt },
+                { type: "image", image: dataUrl }
+              ]
+            }
+          ],
+          stopWhen: stepCountIs(5)
+        });
+        raw = await r.text;
+      }
+
+      let brain: any;
+      try {
+        brain = JSON.parse(raw);
+      } catch {
+        const r2 = streamText({
+          model: visionModel,
+          system: system + "\nCRITICAL: output parseable JSON only.",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: userPrompt },
+                { type: "image", image: dataUrl }
+              ]
+            }
+          ],
+          stopWhen: stepCountIs(5)
+        });
+        const raw2 = await r2.text;
+
+        try {
+          brain = JSON.parse(raw2);
+        } catch {
+          console.error("Non-JSON model output:", raw2.slice(0, 1200));
+          return Response.json(
+            { ok: false, error: "Model returned invalid JSON." },
+            { status: 502 }
+          );
+        }
+      }
+
       return Response.json({
-        success: hasOpenAIKey
+        ok: true,
+        received: {
+          filename: image.name,
+          type: image.type,
+          size: image.size,
+          goal
+        },
+        brain
       });
     }
-    if (!process.env.OPENAI_API_KEY) {
-      console.error(
-        "OPENAI_API_KEY is not set, don't forget to set it locally in .dev.vars, and use `wrangler secret bulk .dev.vars` to upload it to production"
-      );
-    }
+
     return (
       // Route the request to our agent or return 404 if not found
       (await routeAgentRequest(request, env)) ||
