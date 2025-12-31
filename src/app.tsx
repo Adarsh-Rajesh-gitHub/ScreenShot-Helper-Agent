@@ -27,10 +27,9 @@ import {
 } from "@phosphor-icons/react";
 
 // List of tools that require human confirmation
-// NOTE: this should match the tools that don't have execute functions in tools.ts
-const toolsRequiringConfirmation: (keyof typeof tools)[] = [
-  "getWeatherInformation"
-];
+// NOTE: this should match tools that do NOT have execute functions in tools.ts.
+// This project intentionally exposes no confirmation-only tools.
+const toolsRequiringConfirmation: (keyof typeof tools)[] = [];
 
 export default function Chat() {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
@@ -321,33 +320,29 @@ export default function Chat() {
     setAgentInput(e.target.value);
   };
 
-  const handleAgentSubmit = async (
-    e: React.FormEvent,
-    extraData: Record<string, unknown> = {}
-  ) => {
-    e.preventDefault();
-    if (!agentInput.trim()) return;
+const handleAgentSubmit = async (
+  e: React.FormEvent,
+  extraData: Record<string, unknown> = {}
+) => {
+  e.preventDefault();
+  if (!agentInput.trim()) return;
 
-    const message = agentInput;
-    setAgentInput("");
+  const message = agentInput;
+  setAgentInput("");
 
-    // If a screenshot was captured, fetch the latest stored analysis and embed it invisibly
-    // in the user message so the model sees it but the UI does not render it.
-    let hiddenContext: string | null = null;
-    if (captureResp) {
-      const sessionPayload = await fetchSessionForContext();
-      hiddenContext = sessionPayload ? buildHiddenScreenshotContext(sessionPayload) : null;
-    }
+  let hiddenContext: string | null = null;
+  if (captureResp) {
+    const sessionPayload = await fetchSessionForContext();
+    hiddenContext = sessionPayload ? buildHiddenScreenshotContext(sessionPayload) : null;
+  }
 
-    const parts: any[] = [];
-    if (hiddenContext) parts.push({ type: "text", text: hiddenContext });
-    parts.push({ type: "text", text: message });
+  const parts: any[] = [];
+  if (hiddenContext) parts.push({ type: "text", text: hiddenContext }); // hidden by your renderer
+  parts.push({ type: "text", text: message });
 
+  try {
     await sendMessage(
-      {
-        role: "user",
-        parts
-      },
+      { role: "user", parts } as any,
       {
         body: {
           ...extraData,
@@ -358,7 +353,11 @@ export default function Chat() {
         }
       }
     );
-  };
+  } catch (err) {
+    console.error("sendMessage failed:", err);
+    alert("Send failed. Check Console + Network for the first error.");
+  }
+};
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -449,17 +448,20 @@ export default function Chat() {
                   </div>
                   <h3 className="font-semibold text-lg">Welcome to AI Chat</h3>
                   <p className="text-muted-foreground text-sm">
-                    Start a conversation with your AI assistant. Try asking
-                    about:
+                    Upload a screenshot + goal, then ask for exact click-by-click steps.
                   </p>
                   <ul className="text-sm text-left space-y-2">
                     <li className="flex items-center gap-2">
                       <span className="text-[#F48120]">•</span>
-                      <span>Weather information for any city</span>
+                      <span>"I want to edit my profile" (after uploading the page screenshot)</span>
                     </li>
                     <li className="flex items-center gap-2">
                       <span className="text-[#F48120]">•</span>
-                      <span>Local time in different locations</span>
+                      <span>"Which button should I click next?"</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-[#F48120]">•</span>
+                      <span>"What changed on this screen?" (upload the next screenshot)</span>
                     </li>
                   </ul>
                 </div>
@@ -497,34 +499,34 @@ export default function Chat() {
                       <div>
                         {m.parts?.map((part, i) => {
                           if (part.type === "text") {
-                            if (part.text.startsWith("[[SCREENSHOT_CONTEXT]]")) return null;
+                            const raw = part.text ?? "";
+
+                            // Hide the injected screenshot context entirely
+                            if (raw.startsWith("[[SCREENSHOT_CONTEXT]]")) return null;
+
+                            // Hide agent memo JSON (strip it from display)
+                            const memoMarker = "[[AGENT_MEMO]]";
+                            const memoIdx = raw.indexOf(memoMarker);
+
+                            const visible = memoIdx === -1 ? raw : raw.slice(0, memoIdx).trimEnd();
+                            if (!visible) return null;
+
                             return (
                               // biome-ignore lint/suspicious/noArrayIndexKey: immutable index
                               <div key={i}>
                                 <Card
                                   className={`p-3 rounded-md bg-neutral-100 dark:bg-neutral-900 ${
-                                    isUser
-                                      ? "rounded-br-none"
-                                      : "rounded-bl-none border-assistant-border"
+                                    isUser ? "rounded-br-none" : "rounded-bl-none border-assistant-border"
                                   } ${
-                                    part.text.startsWith("scheduled message")
-                                      ? "border-accent/50"
-                                      : ""
+                                    visible.startsWith("scheduled message") ? "border-accent/50" : ""
                                   } relative`}
                                 >
-                                  {part.text.startsWith(
-                                    "scheduled message"
-                                  ) && (
-                                    <span className="absolute -top-3 -left-2 text-base">
-                                      🕒
-                                    </span>
+                                  {visible.startsWith("scheduled message") && (
+                                    <span className="absolute -top-3 -left-2 text-base">🕒</span>
                                   )}
                                   <MemoizedMarkdown
                                     id={`${m.id}-${i}`}
-                                    content={part.text.replace(
-                                      /^scheduled message: /,
-                                      ""
-                                    )}
+                                    content={visible.replace(/^scheduled message: /, "")}
                                   />
                                 </Card>
                                 <p

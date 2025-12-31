@@ -17,17 +17,7 @@ import { processToolCalls, cleanupMessages } from "./utils";
 import { tools, executions } from "./tools";
 
 
-//import { env } from "cloudflare:workers";
 
-// Cloudflare AI Gateway
-// const openai = createOpenAI({
-//   apiKey: env.OPENAI_API_KEY,
-//   baseURL: env.GATEWAY_BASE_URL,
-// });
-
-/**
- * Chat Agent implementation that handles real-time AI chat interactions
- */
 export class Chat extends AIChatAgent<Env> {
   /**
    * Handles incoming chat messages and manages the response stream
@@ -35,14 +25,27 @@ export class Chat extends AIChatAgent<Env> {
 
   private async readSessionState(): Promise<SessionState | null> {
     try {
+      console.log("[chat] this.name (DO key):", this.name);
+
       // IMPORTANT: use the agent instance name as the durable-session key
       const id = this.env.SESSION_MEMORY.idFromName(this.name);
       const stub = this.env.SESSION_MEMORY.get(id);
+
       const r = await stub.fetch("https://do/session", { method: "GET" });
+      console.log("[chat] /session fetch ok?:", r.ok, "status:", r.status);
       if (!r.ok) return null;
+
       const data = (await r.json()) as any;
+      console.log(
+        "[chat] session has brain?:",
+        Boolean(data?.session?.last_result_json),
+        "history_len:",
+        data?.session?.history?.length ?? 0
+      );
+
       return (data?.session as SessionState) ?? null;
-    } catch {
+    } catch (e: any) {
+      console.log("[chat] readSessionState error:", String(e?.message ?? e));
       return null;
     }
   }
@@ -59,8 +62,18 @@ export class Chat extends AIChatAgent<Env> {
         ? session.history[session.history.length - 1]?.goal
         : null;
 
+    const activeGoal = session?.active_goal ?? lastGoal;
+    const agentMemo =
+      typeof session?.agent_memo === "string" && session.agent_memo.trim().length
+        ? session.agent_memo.trim()
+        : null;
+
     const elements = Array.isArray(brain.ui_elements) ? brain.ui_elements : [];
     const steps = Array.isArray(brain.steps) ? brain.steps : [];
+
+    let visionText =
+      typeof brain.vision_text === "string" ? brain.vision_text : "";
+    if (visionText.length > 2000) visionText = visionText.slice(0, 2000) + "…";
 
     const elementsLines = elements
       .slice(0, 12)
@@ -80,11 +93,17 @@ export class Chat extends AIChatAgent<Env> {
       if (brainJson.length > 3500) brainJson = brainJson.slice(0, 3500) + "…";
           return (
       "\n\n" +
+      `If screenshot analysis context is present, you MUST answer with:\n` +
+`1) WHERE the target UI element is (left/right/top/bottom + what it looks like)\n` +
+`2) Steps to complete the goal (numbered)\n` +
+`Only ask for a new screenshot if the element is NOT visible or need_new_screenshot=true.\n` +
       "You have structured analysis from the user's most recent uploaded screenshot. " +
       "Use it together with the user's message to answer. " +
       "If the user asks for something that requires seeing a *new* screen and the context is stale, ask for a new screenshot.\n" +
       "--- SCREENSHOT_ANALYSIS ---\n" +
       `Goal (from upload): ${lastGoal ?? "(unknown)"}\n` +
+            `Active goal: ${activeGoal ?? "(unknown)"}\n` +
+      `Agent memo: ${agentMemo ?? "(none)"}\n` +
       `Screen summary: ${brain.screen_summary ?? "(none)"}\n` +
       `Confidence: ${typeof brain.confidence === "number" ? brain.confidence : "(n/a)"}\n` +
       `Need new screenshot: ${brain.need_new_screenshot ? "true" : "false"}\n` +
@@ -93,8 +112,10 @@ export class Chat extends AIChatAgent<Env> {
       (elementsLines || "(none)") +
       "\n\nSteps (suggested by analysis):\n" +
       (stepsLines || "(none)") +
+      "\n\nVision text (from screenshot):\n" +
+      (visionText || "(unavailable)") +
       "\n\nFull structured JSON:\n" +
-(brainJson || "(unavailable)") +
+      (brainJson || "(unavailable)") +
       "\n--- END_SCREENSHOT_ANALYSIS ---\n"
     );
   }
@@ -110,7 +131,19 @@ export class Chat extends AIChatAgent<Env> {
     // );
 
     // Collect all tools, including MCP tools
-    const allTools = { ...tools };
+const allTools = {};
+    // Helper: only allow the local-time tool when the user explicitly asks for time/date.
+    // This prevents irrelevant tool calls from hijacking the answer when we already have screenshot context.
+    const toolsForUserText = (userText: string) => {
+      const wantsTime = /\b(time|timezone|date|clock|today|tomorrow)\b/i.test(userText);
+      if (wantsTime) return allTools;
+
+      // Filter out getLocalTime (and any accidental prefixed variant)
+      const filtered = Object.fromEntries(
+        Object.entries(allTools).filter(([name]) => name !== "getLocalTime" && name !== "tool-getLocalTime")
+      );
+      return filtered as typeof allTools;
+    };
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -130,16 +163,31 @@ export class Chat extends AIChatAgent<Env> {
         const session = await this.readSessionState();
         const screenshotContext = this.formatScreenshotContext(session);
 
+        // Derive a simple user-text string for tool gating / logging
+        const lastUserMsg = [...processedMessages].reverse().find((m: any) => m?.role === "user");
+        const userText =
+          typeof (lastUserMsg as any)?.content === "string"
+            ? ((lastUserMsg as any).content as string)
+            : JSON.stringify((lastUserMsg as any)?.content ?? "");
+
+        console.log("[chat] screenshotContext chars:", screenshotContext.length);
+        console.log("[chat] screenshotContext preview:", screenshotContext.slice(0, 200));
+        console.log("[chat] last user text:", userText.slice(0, 200));
+
+        const toolsForTurn = toolsForUserText(userText);
+
         const result = streamText({
           system:
             `You are a helpful assistant. Be concise. Do not output <think> tags or any XML/HTML-like tags.\n` +
             `When a screenshot analysis context is present, you MUST use it together with the user's message.\n` +
+            `Only call tools when they are clearly necessary to answer the user's request.\n` +
+            `NEVER call getLocalTime unless the user explicitly asked for the time/date/timezone.\n` +
             `If the user did not specify what they want done, ask a single clarifying question.\n` +
             screenshotContext,
 
           messages: convertToModelMessages(processedMessages),
           model,
-          tools: allTools,
+          tools: toolsForTurn,
           // Type boundary: streamText expects specific tool types, but base class uses ToolSet
           // This is safe because our tools satisfy ToolSet interface (verified by 'satisfies' in tools.ts)
           onFinish: onFinish as unknown as StreamTextOnFinishCallback<
@@ -151,7 +199,6 @@ export class Chat extends AIChatAgent<Env> {
         writer.merge(result.toUIMessageStream());
       }
     });
-
     return createUIMessageStreamResponse({ stream });
   }
 }
@@ -189,167 +236,7 @@ export default {
         return Response.json({ ok: false, error: msg }, { status: 500 });
       }
     }
-    // if (url.pathname === "/capture" && request.method === "POST") {
-    //   const form = await request.formData();
-
-    //   const goalVal = form.get("goal");
-    //   const imageVal = form.get("image");
-
-    //   // 0) Ensure Workers AI binding exists
-    //   if (!env.AI) {
-    //     return Response.json(
-    //       { ok: false, error: "Missing AI binding (env.AI)." },
-    //       { status: 500 }
-    //     );
-    //   }
-
-    //   // 1) Validate goal first
-    //   if (
-    //     typeof goalVal !== "string" ||
-    //     goalVal.trim().split(/\s+/).length < 2
-    //   ) {
-    //     return Response.json(
-    //       { ok: false, error: "Goal must be at least 2 words." },
-    //       { status: 400 }
-    //     );
-    //   }
-    //   const goal = goalVal.trim();
-
-    //   // 2) Validate file existence + type
-    //   if (!(imageVal instanceof File)) {
-    //     return Response.json(
-    //       { ok: false, error: "Missing image file." },
-    //       { status: 400 }
-    //     );
-    //   }
-    //   const image = imageVal;
-
-    //   const allowed = new Set(["image/png", "image/jpeg"]);
-    //   if (!allowed.has(image.type)) {
-    //     return Response.json(
-    //       { ok: false, error: "Only PNG/JPG allowed." },
-    //       { status: 415 }
-    //     );
-    //   }
-
-    //   const maxBytes = 5 * 1024 * 1024;
-    //   if (image.size > maxBytes) {
-    //     return Response.json(
-    //       { ok: false, error: "File too large (max 5MB)." },
-    //       { status: 413 }
-    //     );
-    //   }
-
-    //   // 3) Build data URL AFTER validation
-    //   const bytes = new Uint8Array(await image.arrayBuffer());
-    //   let sid = getCookie(request, "sid");
-    //   const isNewSid = !sid;
-    //   if (!sid) sid = makeSid();
-
-    //   const imageHash = await sha256Base64(bytes);
-    //   const base64 = toBase64(bytes);
-    //   const dataUrl = `data:${image.type};base64,${base64}`;
-
-    //   // 4) Pick vision model from env (configurable)
-    //   const modelId =
-    //     env.VISION_MODEL_ID || "@cf/meta/llama-3.2-11b-vision-instruct";
-
-    //   const workersai = createWorkersAI({ binding: env.AI });
-    //   const visionModel = workersai(modelId as any); // avoids TS union typing pain
-
-    //   // 5) One-call brain with JSON-only output
-    //   const system =
-    //     "Return ONLY valid JSON. No markdown. No commentary. No extra keys.\n" +
-    //     "Schema: {\n" +
-    //     '  "screen_summary": string,\n' +
-    //     '  "ui_elements": [{"label": string, "type": string, "hint": string}],\n' +
-    //     '  "steps": [string],\n' +
-    //     '  "confidence": number,\n' +
-    //     '  "need_new_screenshot": boolean,\n' +
-    //     '  "expected_next_screen": string\n' +
-    //     "}\n" +
-    //     "Rules: ui_elements length >= 6; steps length >= 4.";
-
-    //   const userPrompt =
-    //     `Goal: ${goal}\n` + "Include >=6 ui_elements and >=4 numbered steps.";
-
-    //   const callBrain = async (sys: string) => {
-    //     const result = await streamText({
-    //       model: visionModel,
-    //       system: sys,
-    //       messages: [
-    //         {
-    //           role: "user",
-    //           content: [
-    //             { type: "text", text: userPrompt },
-    //             { type: "image", image: dataUrl }
-    //           ]
-    //         }
-    //       ],
-    //       stopWhen: stepCountIs(5)
-    //     });
-    //     const txt = await result.text; // `.text` is a Promise<string>
-    //     return txt.trim();
-    //   };
-
-    //   const raw1 = await callBrain(system);
-
-    //   let brain: any;
-    //   try {
-    //     brain = JSON.parse(raw1);
-    //   } catch {
-    //     // retry once, stricter
-    //     const raw2 = await callBrain(
-    //       system + "\nCRITICAL: Output parseable JSON only. No prose."
-    //     );
-
-    //     try {
-    //       brain = JSON.parse(raw2);
-    //     } catch {
-    //       console.error(
-    //         "Non-JSON model output (truncated):",
-    //         raw2.slice(0, 1200)
-    //       );
-    //       return Response.json(
-    //         { ok: false, error: "Model returned invalid JSON." },
-    //         { status: 502 }
-    //       );
-    //     }
-    //   }
-    //   const id = env.SESSION_MEMORY.idFromName(sid);
-    //   const stub = env.SESSION_MEMORY.get(id);
-
-    //   await stub.fetch("https://do/session/update", {
-    //     method: "POST",
-    //     headers: { "Content-Type": "application/json" },
-    //     body: JSON.stringify({
-    //       goal,
-    //       image_hash: imageHash,
-    //       brain
-    //     })
-    //   });
-
-    //   const resp = Response.json({
-    //     ok: true,
-    //     sid,
-    //     received: {
-    //       filename: image.name,
-    //       type: image.type,
-    //       size: image.size,
-    //       goal
-    //     },
-    //     brain
-    //   });
-
-    //   if (isNewSid) {
-    //     resp.headers.set(
-    //       "Set-Cookie",
-    //       `sid=${encodeURIComponent(sid)}; Path=/; HttpOnly; SameSite=Lax`
-    //     );
-    //   }
-
-    //   return resp;
-    // }
+    
     if (url.pathname === "/capture" && request.method === "POST") {
       const debug = url.searchParams.get("debug") === "1";
       try {
@@ -412,7 +299,9 @@ export default {
 
         let sid = agentName || getCookie(request, "sid");
         const isNewSid = !getCookie(request, "sid") || (agentName && getCookie(request, "sid") !== agentName);
+        console.log("[/capture] agent_name:", agentName, "sid:", sid, "cookie_sid:", getCookie(request, "sid"));
         if (!sid) sid = makeSid();
+        console.log("[/capture] DO write key:", sid);
 
         const imageHash = await sha256Base64(bytes);
         const base64 = toBase64(bytes);
@@ -437,13 +326,29 @@ export default {
         // --------------------
         let visionOut: any;
         try {
-          const visionSystem =
-            "Describe the screenshot as TEXT only, max 25 lines " +
-            "Format:\n" +
-            "SUMMARY: <1 sentence>\n" +
-            "UI: bullet list of visible buttons/inputs/links (max 10)\n" +
-            "TEXT: bullet list of readable text (max 15)\n" +
-            "No JSON. No extra sections.";
+const visionSystem =
+  "You are describing a UI screenshot for a navigation assistant. TEXT ONLY. NO JSON. NO MARKDOWN.\n" +
+  "Goal matters: prioritize elements that help achieve the Goal.\n" +
+  "Use the exact headings below. Keep each bullet short.\n\n" +
+  "SUMMARY: <1 sentence>\n" +
+  "PAGE TYPE: <profile/settings/editor/problem/etc>\n" +
+  "LAYOUT: <header/sidebar/main/right-rail/modals present?>\n" +
+  "GOAL TARGET (MOST IMPORTANT):\n" +
+  "- Element: <exact label text if visible>\n" +
+  "- Where: <left/right/top/bottom + within which panel/card>\n" +
+  "- Looks like: <button/link/icon, color/shape, any icon>\n" +
+  "- Nearby: <closest text labels around it>\n" +
+  "NAV/TABS:\n" +
+  "- <tab item> — <where>\n" +
+  "CLICKABLES (TOP 12):\n" +
+  "- <label> — <type> — <where> — <what it likely does>\n" +
+  "FIELDS (TOP 10):\n" +
+  "- <label/placeholder> — <where>\n" +
+  "STATUS/ERRORS:\n" +
+  "- <anything notable>\n" +
+  "TEXT SNIPPETS (TOP 20):\n" +
+  "- <important visible text>\n\n" +
+  "If the goal target is NOT visible, say: GOAL TARGET NOT VISIBLE.";
 
           visionOut = await env.AI.run(
             visionModelId as any,
@@ -502,9 +407,9 @@ export default {
           "}\n" +
           "Hard limits (must comply):\n" +
           "- screen_summary <= 160 chars\n" +
-          "- ui_elements length between 6 and 8\n" +
-          "- each ui_elements.label <= 40 chars\n" +
-          "- steps length between 4 and 6\n" +
+          "- ui_elements length between 10 and 14\n" +
+            "- each ui_elements.label <= 40 chars\n" +
+          "- steps length between 6 and 10\n" +
           "- each step <= 90 chars\n" +
           "- confidence is 0..1\n";
 
@@ -622,14 +527,17 @@ export default {
 
         if (!brain.screen_summary) brain.screen_summary = "(No summary provided)";
 
-        while (brain.ui_elements.length < 6) {
+        while (brain.ui_elements.length < 10) {
           brain.ui_elements.push({ label: "Unknown", type: "unknown", hint: "" });
         }
 
         brain.steps = brain.steps.filter((s: string) => s.trim().length > 0);
-        while (brain.steps.length < 4) {
+        while (brain.steps.length < 6) {
           brain.steps.push("(Step missing from model; user may need a clearer screenshot.)");
         }
+                // Persist richer capture artifacts for later chat turns (bounded)
+        brain.vision_text = visionText.slice(0, 4000);
+        brain.raw_model_json = rawJsonText.slice(0, 6000);
 
         // 6) Save to Durable Object
         let do_saved = false;
@@ -759,6 +667,37 @@ export default {
       const id = env.SESSION_MEMORY.idFromName(sid);
       const stub = env.SESSION_MEMORY.get(id);
       return stub.fetch("https://do/session/reset", { method: "POST" });
+    }
+        if (url.pathname === "/session/memo" && request.method === "POST") {
+      const sidFromQuery = url.searchParams.get("sid")?.trim();
+      const sidFromHeader = request.headers.get("x-sid")?.trim();
+      const sidFromCookie = getCookie(request, "sid");
+      const sid = sidFromQuery || sidFromHeader || sidFromCookie;
+
+      if (!sid) {
+        return Response.json(
+          { ok: false, error: "No sid provided (query/header/cookie)." },
+          { status: 400 }
+        );
+      }
+
+      let body: any = null;
+      try {
+        body = await request.json();
+      } catch {
+        body = null;
+      }
+
+      const memo = typeof body?.memo === "string" ? body.memo : "";
+      const mode = body?.mode === "append" ? "append" : "replace";
+
+      const id = env.SESSION_MEMORY.idFromName(sid);
+      const stub = env.SESSION_MEMORY.get(id);
+      return stub.fetch("https://do/session/memo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memo, mode })
+      });
     }
     return (
       // Route the request to our agent or return 404 if not found
