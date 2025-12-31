@@ -455,7 +455,7 @@ export default function Chat() {
                   <div className="bg-[#F48120]/12 text-[#F48120] rounded-full p-3 inline-flex border border-[#F48120]/20">
                     <Robot size={24} />
                   </div>
-                  <h3 className="font-semibold text-lg">Welcome to AI Chat</h3>
+                  <h3 className="font-semibold text-lg">Welcome to Screenshot Helper </h3>
                   <p className="text-neutral-600 dark:text-neutral-300 text-sm">
                     Upload a screenshot + goal, then ask for exact
                     click-by-click steps.
@@ -638,27 +638,11 @@ export default function Chat() {
               <label className="text-sm text-neutral-600 dark:text-neutral-400">
                 Screenshot (PNG/JPG)
               </label>
-              <div
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "copy";
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const f = e.dataTransfer.files?.[0];
-                  if (!f) return;
-                  if (!["image/png", "image/jpeg"].includes(f.type)) {
-                    setCaptureErr("Only PNG/JPG allowed.");
-                    return;
-                  }
-                  setCaptureErr(null);
-                  setImageFile(f);
-                }}
-                className="rounded-lg border border-dashed border-neutral-300/80 dark:border-neutral-700 p-3 text-sm text-neutral-600 dark:text-neutral-300 bg-neutral-50/70 dark:bg-neutral-900/30 hover:bg-neutral-50 dark:hover:bg-neutral-900/40 transition-colors"
-              >
-                Drag & drop a PNG/JPG here
-                {imageFile ? ` (selected: ${imageFile.name})` : ""}
-              </div>
+              {imageFile ? (
+  <div className="text-xs text-neutral-600 dark:text-neutral-400">
+    Selected: {imageFile.name}
+  </div>
+) : null}
               <input
                 type="file"
                 name="image"
