@@ -380,11 +380,11 @@ const handleAgentSubmit = async (
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
-  return (
-    <div className="h-[100vh] w-full p-4 flex justify-center items-center bg-fixed overflow-hidden">
+return (
+    <div className="h-[100vh] w-full p-4 flex justify-center items-center bg-neutral-100 dark:bg-neutral-950 overflow-hidden">
       <HasOpenAIKey />
-      <div className="h-[calc(100vh-2rem)] w-full mx-auto max-w-lg flex flex-col shadow-xl rounded-md overflow-hidden relative border border-neutral-300 dark:border-neutral-800">
-        <div className="px-4 py-3 border-b border-neutral-300 dark:border-neutral-800 flex items-center gap-3 sticky top-0 z-10">
+      <div className="h-[calc(100vh-2rem)] w-full mx-auto max-w-lg flex flex-col shadow-2xl rounded-xl overflow-hidden relative border border-neutral-200/70 dark:border-neutral-800 bg-white/70 dark:bg-neutral-950/60 backdrop-blur">
+        <div className="px-4 py-3 border-b border-neutral-200/70 dark:border-neutral-800 flex items-center gap-3 sticky top-0 z-10 bg-white/70 dark:bg-neutral-950/60 backdrop-blur">
           <div className="flex items-center justify-center h-8 w-8">
             <svg
               width="28px"
@@ -404,7 +404,10 @@ const handleAgentSubmit = async (
           </div>
 
           <div className="flex-1">
-            <h2 className="font-semibold text-base">AI Chat Agent</h2>
+            <h2 className="font-semibold text-base tracking-tight">Screenshot Helper</h2>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Screenshot → goal → click-by-click steps
+            </p>
           </div>
 
           <div className="flex items-center gap-2 mr-2">
@@ -438,16 +441,16 @@ const handleAgentSubmit = async (
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 pb-24 max-h-[calc(100vh-10rem)]">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 pb-24 max-h-[calc(100vh-10rem)] bg-neutral-50/60 dark:bg-neutral-950/40">
           {agentMessages.length === 0 && (
             <div className="h-full flex items-center justify-center">
-              <Card className="p-6 max-w-md mx-auto bg-neutral-100 dark:bg-neutral-900">
+              <Card className="p-6 max-w-md mx-auto bg-white/90 dark:bg-neutral-900/80 border border-neutral-200/70 dark:border-neutral-800 shadow-sm">
                 <div className="text-center space-y-4">
-                  <div className="bg-[#F48120]/10 text-[#F48120] rounded-full p-3 inline-flex">
+                  <div className="bg-[#F48120]/12 text-[#F48120] rounded-full p-3 inline-flex border border-[#F48120]/20">
                     <Robot size={24} />
                   </div>
                   <h3 className="font-semibold text-lg">Welcome to AI Chat</h3>
-                  <p className="text-muted-foreground text-sm">
+                  <p className="text-neutral-600 dark:text-neutral-300 text-sm">
                     Upload a screenshot + goal, then ask for exact click-by-click steps.
                   </p>
                   <ul className="text-sm text-left space-y-2">
@@ -515,8 +518,10 @@ const handleAgentSubmit = async (
                               // biome-ignore lint/suspicious/noArrayIndexKey: immutable index
                               <div key={i}>
                                 <Card
-                                  className={`p-3 rounded-md bg-neutral-100 dark:bg-neutral-900 ${
-                                    isUser ? "rounded-br-none" : "rounded-bl-none border-assistant-border"
+                                  className={`p-3 rounded-xl border shadow-sm ${
+                                    isUser
+                                      ? "rounded-br-none bg-[#F48120]/10 dark:bg-[#F48120]/15 border-[#F48120]/20"
+                                      : "rounded-bl-none bg-white/90 dark:bg-neutral-900/80 border-neutral-200/70 dark:border-neutral-800"
                                   } ${
                                     visible.startsWith("scheduled message") ? "border-accent/50" : ""
                                   } relative`}
@@ -589,7 +594,7 @@ const handleAgentSubmit = async (
         </div>
 
         {/* Capture (B1): upload screenshot + goal, no AI call yet */}
-        <div className="px-4 py-3 border-t border-neutral-300 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900">
+        <div className="px-4 py-3 border-t border-neutral-200/70 dark:border-neutral-800 bg-white/70 dark:bg-neutral-950/60 backdrop-blur">
           <form onSubmit={handleCaptureSubmit} className="flex flex-col gap-2">
             <div className="flex flex-col gap-1">
               <label className="text-sm text-neutral-600 dark:text-neutral-400">
@@ -600,7 +605,7 @@ const handleAgentSubmit = async (
                 value={goal}
                 onChange={(e) => setGoal(e.target.value)}
                 placeholder="e.g., Reset my password on this site."
-                className="w-full rounded-md border border-neutral-200 dark:border-neutral-800 bg-transparent px-3 py-2"
+                className="w-full rounded-lg border border-neutral-200/80 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/50 px-3 py-2 outline-none focus:ring-2 focus:ring-[#F48120]/25"
                 required
               />
             </div>
@@ -625,7 +630,7 @@ const handleAgentSubmit = async (
                 setCaptureErr(null);
                 setImageFile(f);
               }}
-              className="rounded-md border border-dashed border-neutral-300 dark:border-neutral-700 p-3 text-sm text-neutral-600 dark:text-neutral-400"
+              className="rounded-lg border border-dashed border-neutral-300/80 dark:border-neutral-700 p-3 text-sm text-neutral-600 dark:text-neutral-300 bg-neutral-50/70 dark:bg-neutral-900/30 hover:bg-neutral-50 dark:hover:bg-neutral-900/40 transition-colors"
             >
               Drag & drop a PNG/JPG here
               {imageFile ? ` (selected: ${imageFile.name})` : ""}
@@ -643,7 +648,7 @@ const handleAgentSubmit = async (
               <button
                 type="submit"
                 disabled={uploading}
-                className="rounded-md border border-neutral-200 dark:border-neutral-800 px-3 py-2"
+                className="rounded-lg border border-neutral-200/80 dark:border-neutral-800 px-3 py-2 bg-white/80 dark:bg-neutral-900/40 hover:bg-white dark:hover:bg-neutral-900/60 transition-colors shadow-sm"
               >
                 {uploading ? "Uploading..." : "Send screenshot"}
               </button>
@@ -669,7 +674,7 @@ const handleAgentSubmit = async (
                     type="button"
                     onClick={loadLatestSession}
                     disabled={sessionLoading}
-                    className="rounded-md border border-neutral-200 dark:border-neutral-800 px-2 py-1 text-xs"
+                    className="rounded-lg border border-neutral-200/80 dark:border-neutral-800 px-2 py-1 text-xs bg-white/70 dark:bg-neutral-900/30 hover:bg-white dark:hover:bg-neutral-900/50 transition-colors"
                   >
                     {sessionLoading ? "Loading..." : "Load analysis"}
                   </button>
@@ -677,7 +682,7 @@ const handleAgentSubmit = async (
                     type="button"
                     onClick={resetSession}
                     disabled={sessionLoading}
-                    className="rounded-md border border-neutral-200 dark:border-neutral-800 px-2 py-1 text-xs"
+                    className="rounded-lg border border-neutral-200/80 dark:border-neutral-800 px-2 py-1 text-xs bg-white/70 dark:bg-neutral-900/30 hover:bg-white dark:hover:bg-neutral-900/50 transition-colors"
                   >
                     Reset analysis
                   </button>
@@ -686,7 +691,7 @@ const handleAgentSubmit = async (
                     onClick={() => setShowCaptureRaw((v) => !v)}
                     disabled={!showDebug}
                     title={showDebug ? "Toggle raw capture response" : "Enable Debug to view raw JSON"}
-                    className={`rounded-md border border-neutral-200 dark:border-neutral-800 px-2 py-1 text-xs ${
+                    className={`rounded-lg border border-neutral-200/80 dark:border-neutral-800 px-2 py-1 text-xs bg-white/70 dark:bg-neutral-900/30 hover:bg-white dark:hover:bg-neutral-900/50 transition-colors ${
                       showDebug ? "" : "opacity-50 cursor-not-allowed"
                     }`}
                   >
@@ -738,7 +743,7 @@ const handleAgentSubmit = async (
             });
             setTextareaHeight("auto"); // Reset height after submission
           }}
-  className="p-3 bg-neutral-50 border-t border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900"        >
+  className="p-3 bg-white/70 border-t border-neutral-200/70 dark:border-neutral-800 dark:bg-neutral-950/60 backdrop-blur"        >
           <div className="flex items-center gap-2">
             <div className="flex-1 relative">
               <Textarea
@@ -748,7 +753,7 @@ const handleAgentSubmit = async (
                     ? "Please respond to the tool confirmation above..."
                     : "Send a message..."
                 }
-                className="flex w-full border border-neutral-200 dark:border-neutral-700 px-3 py-2  ring-offset-background placeholder:text-neutral-500 dark:placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base pb-10 dark:bg-neutral-900"
+                className="flex w-full border border-neutral-200/80 dark:border-neutral-800 px-3 py-2 ring-offset-background placeholder:text-neutral-500 dark:placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F48120]/25 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-950 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl !text-base pb-10 bg-white/80 dark:bg-neutral-900/40"
                 value={agentInput}
                 onChange={(e) => {
                   handleAgentInputChange(e);
